@@ -273,7 +273,7 @@ e la specifica originale in [`docs/SPECIFICA.md`](docs/SPECIFICA.md).
 
 <div align="center">
 
-Fatto con 🐍 e un po' di pazzia da **[Roby](https://github.com/robycinix)**, con l'aiuto di Claude.
+Fatto con 🐍 e un po' di pazzia da **[Roby](https://github.com/robycinix)** ed **ERA**.
 
 *Le GIF e gli screenshot di questa pagina sono catturati dal vero motore del gioco.*
 
