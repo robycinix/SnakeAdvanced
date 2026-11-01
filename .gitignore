@@ -1,0 +1,16 @@
+# Cache Python e strumenti
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Build (PyInstaller / packaging)
+build/
+dist/
+*.spec
+*.egg-info/
+
+# Dati personali del giocatore (record, classifica, preferenze)
+snake_highscore.json
