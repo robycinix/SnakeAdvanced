@@ -16,6 +16,9 @@ in un'arena piena di rivali, mine, tunnel e un boss che ti dà la caccia.
 
 <img src="docs/media/hero.gif" width="640" alt="Partita a Snake Advanced: rivali colpiti dal veleno e tunnel di teletrasporto">
 
+<a href="https://github.com/robycinix/SnakeAdvanced/releases/latest/download/SnakeAdvanced-Setup.exe"><img src="https://img.shields.io/badge/⬇_SCARICA_L'INSTALLER-Windows-2ea44f?style=for-the-badge&logo=windows&logoColor=white" alt="Scarica l'installer per Windows"></a>
+<a href="https://github.com/robycinix/SnakeAdvanced/releases/latest"><img src="https://img.shields.io/github/v/release/robycinix/SnakeAdvanced?style=for-the-badge&label=versione&color=8a2be2" alt="Ultima versione"></a>
+
 [**Download**](#-download) · [**Caratteristiche**](#-caratteristiche) · [**Comandi**](#-comandi) · [**Come è fatto**](#-come-è-fatto) · [**Sviluppo**](#-sviluppo)
 
 </div>
@@ -26,8 +29,8 @@ in un'arena piena di rivali, mine, tunnel e un boss che ti dà la caccia.
 
 | Versione | Per chi | Come |
 | :--- | :--- | :--- |
-| **Installer Windows** `SnakeAdvanced-Setup.exe` | Chiunque: niente Python richiesto | Scaricalo dalla pagina [**Releases**](https://github.com/robycinix/SnakeAdvanced/releases) ed eseguilo |
-| **Portatile** `SnakeAdvanced.exe` | Chi non vuole installare nulla | Dalla pagina [**Releases**](https://github.com/robycinix/SnakeAdvanced/releases), doppio clic e si gioca |
+| **Installer Windows** | Chiunque: niente Python richiesto | [**⬇ SnakeAdvanced-Setup.exe**](https://github.com/robycinix/SnakeAdvanced/releases/latest/download/SnakeAdvanced-Setup.exe) (31 MB) |
+| **Portatile** | Chi non vuole installare nulla | [**⬇ SnakeAdvanced.exe**](https://github.com/robycinix/SnakeAdvanced/releases/latest/download/SnakeAdvanced.exe) (28 MB): doppio clic e si gioca |
 | **Da sorgente** | Sviluppatori | `pip install -r requirements.txt` e `python game.py` |
 
 > [!NOTE]
