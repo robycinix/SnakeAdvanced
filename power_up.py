@@ -23,6 +23,8 @@ class PowerUpType(Enum):
     SLOW_MOTION = "SLOW_MOTION"   # Rallenta il gioco temporaneamente
     GHOST = "GHOST"               # Permette di attraversare il proprio corpo
     MAGNET = "MAGNET"             # Attira il cibo verso la testa
+    TRIPLE_SHOT = "TRIPLE_SHOT"   # Il veleno parte a ventaglio (3 colpi)
+    LASER = "LASER"               # Raggio perforante istantaneo, senza costo
 
 
 # Nome visualizzato, colore e durata (secondi) di ogni power-up
@@ -32,6 +34,8 @@ POWERUP_INFO: Dict[PowerUpType, Tuple[str, Tuple[int, int, int], float]] = {
     PowerUpType.SLOW_MOTION: ("BULLET TIME", (150, 110, 255), 5.0),
     PowerUpType.GHOST: ("FANTASMA", (220, 220, 255), 6.0),
     PowerUpType.MAGNET: ("MAGNETE", (255, 80, 90), 8.0),
+    PowerUpType.TRIPLE_SHOT: ("TRIPLO VELENO", (130, 255, 90), 10.0),
+    PowerUpType.LASER: ("LASER", (255, 50, 160), 7.0),
 }
 
 

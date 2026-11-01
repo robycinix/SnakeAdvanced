@@ -7,6 +7,7 @@ restano coerenti tra loro e il bilanciamento si regola da un unico punto.
 """
 
 import os
+import sys
 
 # --- Configurazione della Finestra (View/Controller) ---
 SCREEN_WIDTH: int = 800  # Larghezza della finestra in pixel
@@ -78,6 +79,27 @@ SCORE_PELLET: int = 5
 PELLET_LIFETIME: float = 10.0
 MAX_PELLETS: int = 80
 
+# --- Armi ---
+SHOT_COST: float = 8.0           # Energia per uno sputo di veleno
+SHOT_COOLDOWN: float = 0.2
+SHOT_SPEED: float = 28.0         # Celle al secondo
+SHOT_LIFETIME: float = 1.4
+TRIPLE_SPREAD: float = 0.32      # Radianti di apertura del ventaglio
+LASER_COOLDOWN: float = 0.3
+
+# --- Salto ---
+JUMP_STEPS: int = 3              # Celle scavalcate in volo
+JUMP_COOLDOWN: float = 1.2       # Secondi tra un salto e il successivo
+JUMP_HEIGHT: float = 28.0        # Altezza massima dell'arco in pixel (solo grafica)
+
+# --- Tunnel di teletrasporto ---
+TUNNEL_FIRST_SPAWN: float = 6.0
+TUNNEL_SPAWN_INTERVAL: float = 12.0
+TUNNEL_LIFETIME: float = 20.0
+MAX_TUNNELS: int = 2
+TUNNEL_MIN_DISTANCE: int = 12      # Distanza minima (celle) tra le due imboccature
+TUNNEL_COLORS: tuple = ((80, 200, 255), (255, 150, 40), (190, 90, 255))
+
 # --- Palette Colori (View) ---
 COLOR_BLACK: tuple[int, int, int] = (0, 0, 0)
 COLOR_NEON_GREEN: tuple[int, int, int] = (60, 255, 120)
@@ -126,5 +148,19 @@ OPPOSITE: dict[str, str] = {
     Direction.RIGHT: Direction.LEFT,
 }
 
-# File del record accanto al codice: così non dipende dalla cartella di avvio
-HIGH_SCORE_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snake_highscore.json")
+def _data_dir() -> str:
+    """
+    Cartella dei dati del giocatore (record, classifica, preferenze).
+    - Da sorgente: accanto al codice, così non dipende dalla cartella di avvio.
+    - Da eseguibile (PyInstaller): in %APPDATA%/SnakeAdvanced, perché la cartella
+      del programma può essere temporanea o non scrivibile (Programmi).
+    """
+    if getattr(sys, "frozen", False):
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        path = os.path.join(base, "SnakeAdvanced")
+        os.makedirs(path, exist_ok=True)
+        return path
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+HIGH_SCORE_FILE: str = os.path.join(_data_dir(), "snake_highscore.json")

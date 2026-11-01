@@ -28,6 +28,9 @@ from config import (
     COLOR_MAGENTA, COLOR_ORANGE,
     RIVAL_START_LEVEL, RIVAL_SPAWN_INTERVAL, BOSS_EVERY, BOSS_LENGTH, BOSS_MIN_LENGTH,
     SCORE_RIVAL, SCORE_BOSS, MAX_PELLETS,
+    TUNNEL_FIRST_SPAWN, TUNNEL_SPAWN_INTERVAL, MAX_TUNNELS, TUNNEL_MIN_DISTANCE, TUNNEL_COLORS,
+    SHOT_COST, SHOT_COOLDOWN, SHOT_SPEED, TRIPLE_SPREAD, LASER_COOLDOWN,
+    JUMP_STEPS, JUMP_COOLDOWN, JUMP_HEIGHT,
 )
 from snake import Snake, COLLISION_WALL, COLLISION_SELF
 from food import Food, FoodKind
@@ -37,6 +40,8 @@ from particles import ParticleSystem
 from audio import SoundBank
 from music import MusicPlayer
 from rival import Rival
+from tunnel import Tunnel
+from weapons import Projectile
 from themes import THEMES, Theme, RIVAL_SKIN, BOSS_SKIN, theme_by_name
 import visuals as vfx
 
@@ -54,6 +59,7 @@ KEY_TO_DIRECTION: Dict[int, str] = {
 }
 DASH_KEYS = (pygame.K_LSHIFT, pygame.K_RSHIFT)
 NOVA_KEYS = (pygame.K_e, pygame.K_q)
+FIRE_KEYS = (pygame.K_f, pygame.K_LCTRL, pygame.K_RCTRL)
 
 BULGE_SPEED: float = 5.0  # Segmenti al secondo con cui la preda scende nel corpo
 
@@ -93,6 +99,10 @@ class Game:
         pygame.init()
         self.screen: pygame.Surface = self._create_window()
         pygame.display.set_caption("Snake Advanced")
+        try:
+            pygame.display.set_icon(vfx.make_icon(64))
+        except pygame.error:
+            pass
         self.clock: pygame.time.Clock = pygame.time.Clock()
 
         # Font: Bahnschrift/Segoe su Windows, ripiego sul font di default
@@ -203,6 +213,16 @@ class Game:
         self.new_record: bool = False
         self.eat_pulse: float = 0.0
         self.rivals: List[Rival] = []
+        self.tunnels: List[Tunnel] = []
+        self.tunnel_timer: float = TUNNEL_FIRST_SPAWN
+        self.teleports: int = 0
+        self.projectiles: List[Projectile] = []
+        self.lasers: List[List] = []   # [punto A, punto B, vita residua] (solo grafica)
+        self.firing: bool = False
+        self.fire_cooldown: float = 0.0
+        self.jump_start: Optional[int] = None   # Passo del serpente al decollo
+        self.jump_cooldown: float = 0.0
+        self.jumps: int = 0
         self.pellets: List[Food] = []
         self.rival_timer: float = RIVAL_SPAWN_INTERVAL
         self.bosses_done: Set[int] = set()
@@ -317,9 +337,12 @@ class Game:
                 self.menu_panel_timer = 0.0
 
         elif self.state == GameState.PLAYING:
-            if key == pygame.K_SPACE or key == pygame.K_p:
+            if key == pygame.K_p:
                 self.state = GameState.PAUSED
                 self.dashing = False
+                self.firing = False
+            elif key == pygame.K_SPACE:
+                self._jump()
             elif key == pygame.K_ESCAPE:
                 self.state = GameState.MENU
                 self.dashing = False
@@ -329,6 +352,9 @@ class Game:
                 self._start_dash()
             elif key in NOVA_KEYS:
                 self._nova()
+            elif key in FIRE_KEYS:
+                self.firing = True
+                self._fire()
 
         elif self.state == GameState.PAUSED:
             if key == pygame.K_SPACE or key == pygame.K_p:
@@ -346,6 +372,8 @@ class Game:
         """Rilascio tasti: lo scatto dura finché SHIFT è premuto."""
         if key in DASH_KEYS:
             self.dashing = False
+        if key in FIRE_KEYS:
+            self.firing = False
 
     # ------------------------------------------------------------------
     # Logica (Model update)
@@ -369,6 +397,7 @@ class Game:
             if self.effects[kind] <= 0:
                 del self.effects[kind]
         self.grace = max(0.0, self.grace - dt)
+        self.jump_cooldown = max(0.0, self.jump_cooldown - dt)
 
         if self.combo_timer > 0:
             self.combo_timer -= dt
@@ -399,6 +428,11 @@ class Game:
         if self.mine_timer <= 0:
             self.mine_timer = max(4.0, MINE_SPAWN_INTERVAL - min(self.level, 6) * 0.8)
             self._spawn_mine()
+        self.tunnels = [tun for tun in self.tunnels if tun.update(dt)]
+        self.tunnel_timer -= dt
+        if self.tunnel_timer <= 0:
+            self.tunnel_timer = TUNNEL_SPAWN_INTERVAL
+            self._spawn_tunnel()
         if self.food.position is not None:
             self.food.update(dt)
         self.pellets = [pel for pel in self.pellets if pel.update(dt)]
@@ -413,15 +447,23 @@ class Game:
 
         if self.state == GameState.PLAYING:
             self._update_rivals(dt)
+        if self.state == GameState.PLAYING:
+            self.fire_cooldown = max(0.0, self.fire_cooldown - dt)
+            if self.firing:
+                self._fire()
+            self._update_projectiles(dt)
 
     def _step(self) -> None:
         """
         Esegue un singolo passo: movimento, collisioni, mine, magnete, cibo e power-up.
         """
         self.snake.step()
+        airborne = self._head_airborne()
+        if not airborne:
+            self._try_teleport(self.snake, True)
 
         kind = self.snake.collision_kind()
-        if kind == COLLISION_SELF and (self.ghost_active or self.grace > 0):
+        if kind == COLLISION_SELF and (self.ghost_active or self.grace > 0 or airborne):
             kind = None
         if kind is not None:
             if self.shield_active:
@@ -429,6 +471,15 @@ class Game:
             else:
                 self._game_over(kind)
                 return
+
+        if airborne:
+            return  # In volo: si scavalcano mine, rivali, cibo e power-up
+        if self.jump_start is not None:
+            since = self.snake.steps - self.jump_start
+            if since == JUMP_STEPS + 1:
+                self._land()
+            elif since > len(self.snake.body) + JUMP_STEPS + 1:
+                self.jump_start = None  # Anche la coda è atterrata
 
         head = self.snake.head
         for mine in list(self.mines):
@@ -471,6 +522,8 @@ class Game:
         cells += [pel.position for pel in self.pellets if pel.position is not None]
         for r in self.rivals:
             cells += r.body
+        for tun in self.tunnels:
+            cells += [tun.a, tun.b]
         for f in (self.food, self.bonus_food):
             if f is not None and f.position is not None:
                 cells.append(f.position)
@@ -673,6 +726,8 @@ class Game:
         hx, hy = self.snake.head
         obstacles = set(self.snake.body[1:])
         obstacles.update(m.position for m in self.mines)
+        for tun in self.tunnels:
+            obstacles.update((tun.a, tun.b))
         for f in (self.food, self.bonus_food):
             if f is None or f.position is None:
                 continue
@@ -717,6 +772,243 @@ class Game:
         self._flash(COLOR_RED if not self.won else COLOR_GOLD, 0.5)
         self._shake(0.6, 14)
         self.sounds.play("death" if not self.won else "level")
+
+    # ------------------------------------------------------------------
+    # Salto
+    # ------------------------------------------------------------------
+
+    def _jump(self) -> None:
+        """
+        Decollo (SPAZIO): nei prossimi JUMP_STEPS passi la testa è in volo e
+        scavalca qualsiasi cosa; atterra al passo successivo, dove le collisioni
+        tornano a contare. Il resto del corpo segue lo stesso arco.
+        """
+        if self.jump_cooldown > 0 or self._head_airborne():
+            return
+        self.jump_start = self.snake.steps
+        self.jump_cooldown = JUMP_COOLDOWN
+        self.jumps += 1
+        hx, hy = vfx.cell_center(self.snake.head)
+        self.particles.emit_ring(hx, hy + 4, (150, 140, 110), 30, 0.35, 2)
+        self.particles.emit_burst(hx, hy + 6, (120, 110, 90), 10, speed=(30, 110), life=(0.2, 0.5))
+        self.sounds.play("jump")
+
+    def _head_airborne(self) -> bool:
+        """True se la testa è in volo in questo passo."""
+        return self._segment_airborne(0)
+
+    def _segment_airborne(self, index: int) -> bool:
+        """
+        Il segmento `index` occupa la cella in cui si trovava la testa `index` passi fa:
+        è in volo se in quel passo la testa lo era. Così l'arco è ancorato al terreno.
+        """
+        if self.jump_start is None:
+            return False
+        k = self.snake.steps - self.jump_start - index
+        return 1 <= k <= JUMP_STEPS
+
+    def _land(self) -> None:
+        """Atterraggio della testa: polvere, piccolo tremolio e tonfo."""
+        hx, hy = vfx.cell_center(self.snake.head)
+        self.particles.emit_ring(hx, hy + 4, (170, 160, 130), 40, 0.4, 3)
+        self.particles.emit_burst(hx, hy + 6, (130, 120, 100), 16, speed=(40, 160), life=(0.25, 0.6))
+        self._shake(0.12, 3)
+        self.sounds.play("land")
+
+    def _lift_fn(self, alpha: float):
+        """
+        Funzione altezza(segmento) per il renderer: un arco a seno che scorre
+        dalla testa alla coda man mano che ogni parte del corpo passa sul punto di decollo.
+        """
+        if self.jump_start is None:
+            return None
+        clock = self.snake.steps + alpha - self.jump_start
+        span = JUMP_STEPS + 1
+
+        def lift(seg: float) -> float:
+            k = clock - seg
+            return JUMP_HEIGHT * math.sin(math.pi * k / span) if 0.0 < k < span else 0.0
+        return lift
+
+    # ------------------------------------------------------------------
+    # Armi
+    # ------------------------------------------------------------------
+
+    def _fire(self) -> None:
+        """
+        Spara nella direzione della testa: veleno (costa energia), a ventaglio
+        col Triplo Veleno, oppure raggio perforante gratuito col Laser.
+        """
+        if self.fire_cooldown > 0 or self.state != GameState.PLAYING:
+            return
+        laser = PowerUpType.LASER in self.effects
+        cost = 0.0 if laser else SHOT_COST
+        if self.energy < cost:
+            self.fire_cooldown = 0.35
+            self.sounds.play("deny")
+            return
+        self.energy -= cost
+        hx, hy = self.snake.head
+        dx, dy = DIRECTION_VECTORS[self.snake.direction]
+        if laser:
+            self.fire_cooldown = LASER_COOLDOWN
+            self._fire_laser(hx, hy, dx, dy)
+            return
+        self.fire_cooldown = SHOT_COOLDOWN
+        spread = (0.0, -TRIPLE_SPREAD, TRIPLE_SPREAD) if PowerUpType.TRIPLE_SHOT in self.effects else (0.0,)
+        for a in spread:
+            vx = (dx * math.cos(a) - dy * math.sin(a)) * SHOT_SPEED
+            vy = (dx * math.sin(a) + dy * math.cos(a)) * SHOT_SPEED
+            self.projectiles.append(Projectile(hx + 0.5 + dx * 0.6, hy + 0.5 + dy * 0.6, vx, vy))
+        mx, my = (hx + 0.5 + dx * 0.8) * CELL_SIZE, (hy + 0.5 + dy * 0.8) * CELL_SIZE
+        self.particles.emit_burst(mx, my, (120, 255, 90), 6, speed=(40, 140), life=(0.15, 0.35))
+        self.sounds.play("shoot")
+
+    def _fire_laser(self, hx: int, hy: int, dx: int, dy: int) -> None:
+        """Raggio istantaneo fino al bordo: colpisce tutto ciò che incontra."""
+        x, y = hx + dx, hy + dy
+        while 0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT:
+            if self._projectile_hit((x, y)):
+                cx, cy = vfx.cell_center((x, y))
+                self.particles.emit_sparks(cx, cy, (255, 120, 200), 8)
+            x, y = x + dx, y + dy
+        a = ((hx + 0.5 + dx * 0.7) * CELL_SIZE, (hy + 0.5 + dy * 0.7) * CELL_SIZE)
+        b = ((x + 0.5 - dx * 0.5) * CELL_SIZE, (y + 0.5 - dy * 0.5) * CELL_SIZE)
+        self.lasers.append([a, b, 0.3])
+        self._shake(0.12, 4)
+        self.sounds.play("laser")
+
+    def _update_projectiles(self, dt: float) -> None:
+        """
+        Muove i proiettili a sotto-passi e risolve gli impatti cella per cella.
+        Un proiettile che entra in un tunnel aperto esce dall'altra imboccatura.
+        """
+        for pr in self.projectiles:
+            steps = pr.sub_steps(dt)
+            for _ in range(steps):
+                pr.x += pr.vx * dt / steps
+                pr.y += pr.vy * dt / steps
+                cell = pr.cell
+                if not (0 <= cell[0] < GRID_WIDTH and 0 <= cell[1] < GRID_HEIGHT):
+                    pr.alive = False
+                    self.particles.emit_burst(pr.x * CELL_SIZE, pr.y * CELL_SIZE, (120, 255, 90), 8,
+                                              speed=(30, 120), life=(0.2, 0.5))
+                    break
+                if cell == pr.last_cell:
+                    continue
+                pr.last_cell = cell
+                for tun in self.tunnels:
+                    dest = tun.other_end(cell) if tun.active and not pr.warped else None
+                    if dest is not None:
+                        pr.x += dest[0] - cell[0]
+                        pr.y += dest[1] - cell[1]
+                        pr.last_cell = dest
+                        pr.warped = True
+                        break
+                if self._projectile_hit(pr.last_cell or cell):
+                    pr.alive = False
+                    x, y = pr.x * CELL_SIZE, pr.y * CELL_SIZE
+                    self.particles.emit_burst(x, y, (120, 255, 90), 14, speed=(60, 220))
+                    break
+            pr.life -= dt
+        self.projectiles = [pr for pr in self.projectiles if pr.alive and pr.life > 0]
+
+    def _projectile_hit(self, cell: GridPosition) -> bool:
+        """
+        Effetto di un colpo sulla cella: mina esplosa, testa di rivale = eliminato,
+        corpo di rivale = tagliato; il boss perde segmenti.
+
+        :return: True se ha colpito qualcosa.
+        """
+        for mine in list(self.mines):
+            if mine.position == cell:
+                self._destroy_mine(mine, None)
+                return True
+        for r in list(self.rivals):
+            if not r.alive:
+                continue
+            if cell == r.head:
+                if r.boss:
+                    self._damage_boss(r, 3)
+                else:
+                    self._kill_rival(r, "CENTRATO!")
+                return True
+            if cell in r.body:
+                if r.boss:
+                    self._damage_boss(r, 2)
+                else:
+                    self._cut_rival(r, r.body.index(cell))
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Tunnel di teletrasporto
+    # ------------------------------------------------------------------
+
+    def _spawn_tunnel(self) -> None:
+        """
+        Apre una coppia di imboccature lontane tra loro, lontane dai bordi
+        (si esce sempre con spazio davanti) e non addosso alla testa.
+        """
+        if len(self.tunnels) >= MAX_TUNNELS:
+            return
+        cells = [c for c in self._free_cells(5)
+                 if 2 <= c[0] < GRID_WIDTH - 2 and 2 <= c[1] < GRID_HEIGHT - 2]
+        if len(cells) < 2:
+            return
+        a = random.choice(cells)
+        far = [c for c in cells if abs(c[0] - a[0]) + abs(c[1] - a[1]) >= TUNNEL_MIN_DISTANCE]
+        if not far:
+            return
+        b = random.choice(far)
+        used = {tun.color_index for tun in self.tunnels}
+        color_index = next((i for i in range(len(TUNNEL_COLORS)) if i not in used), 0)
+        self.tunnels.append(Tunnel(a, b, color_index))
+        col = TUNNEL_COLORS[color_index]
+        for end in (a, b):
+            cx, cy = vfx.cell_center(end)
+            self.particles.emit_ring(cx, cy, col, 60, 0.6, 3)
+            self.particles.emit_burst(cx, cy, col, 14, speed=(30, 140))
+        self.sounds.play("spawn")
+
+    def _try_teleport(self, snake: Snake, is_player: bool) -> bool:
+        """
+        Se la testa è appena entrata in un'imboccatura aperta, la sposta
+        all'uscita collegata mantenendo la direzione. Se l'uscita è ostruita
+        (corpo, rivale o mina) il tunnel è instabile e non trasporta:
+        meglio niente teletrasporto che una morte non meritata.
+
+        :return: True se il teletrasporto è avvenuto.
+        """
+        head = snake.head
+        for tun in self.tunnels:
+            if not tun.active:
+                continue
+            dest = tun.other_end(head)
+            if dest is None:
+                continue
+            danger = set(self.snake.body)
+            danger.update(m.position for m in self.mines)
+            for r in self.rivals:
+                danger.update(r.body)
+            if dest in danger:
+                return False
+            snake.body[0] = dest
+            col = TUNNEL_COLORS[tun.color_index % len(TUNNEL_COLORS)]
+            for end in (head, dest):
+                cx, cy = vfx.cell_center(end)
+                self.particles.emit_ring(cx, cy, col, 55, 0.45, 4)
+                self.particles.emit_burst(cx, cy, col, 22, speed=(60, 260))
+                self.particles.emit_sparks(cx, cy, (255, 255, 255), 6)
+            if is_player:
+                self.teleports += 1
+                dx, dy = vfx.cell_center(dest)
+                self._add_text(dx, dy - 22, "WARP!", col, "small", 0.8)
+                self._flash(col, 0.18)
+                self._shake(0.12, 3)
+                self.sounds.play("teleport")
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Rivali e boss
@@ -807,6 +1099,7 @@ class Game:
             targets = [f.position for f in self._all_food() if f.position is not None]
         snake.change_direction(r.choose_direction(targets, self._rival_obstacles(r)))
         snake.step()
+        self._try_teleport(snake, False)
 
         x, y = snake.head
         if not (0 <= x < GRID_WIDTH and 0 <= y < GRID_HEIGHT):
@@ -836,7 +1129,8 @@ class Game:
                     self._kill_rival(r, "BOOM!")
                 return
 
-        if head == self.snake.head:
+        touch = not (head in self.snake.body and self._segment_airborne(self.snake.body.index(head)))
+        if touch and head == self.snake.head:
             if r.boss and not self.dashing:
                 if self.shield_active:
                     self._consume_shield(None)
@@ -849,7 +1143,7 @@ class Game:
             else:
                 self._kill_rival(r, "TESTA A TESTA!")
             return
-        if head in self.snake.body[1:]:
+        if touch and head in self.snake.body[1:]:
             if not r.boss:
                 self._kill_rival(r, "INTRAPPOLATO!")
                 return
@@ -956,6 +1250,8 @@ class Game:
         occupied = set(self.snake.body)
         occupied.update(m.position for m in self.mines)
         occupied.update(pel.position for pel in self.pellets if pel.position is not None)
+        for tun in self.tunnels:
+            occupied.update((tun.a, tun.b))
         for c in cells:
             if len(self.pellets) >= MAX_PELLETS:
                 break
@@ -1098,7 +1394,12 @@ class Game:
             if self.menu_panel_timer > 7.0:
                 self.menu_panel_timer = 0.0
                 self.menu_panel ^= 1
-        elif self.state == GameState.PLAYING:
+        for beam in self.lasers:
+            beam[2] -= dt
+        self.lasers = [beam for beam in self.lasers if beam[2] > 0]
+        if self.state == GameState.PLAYING:
+            for pr in self.projectiles:
+                self.particles.emit_trail(pr.x * CELL_SIZE, pr.y * CELL_SIZE, (90, 220, 70), 2.0, 0.25, 8)
             for r in self.rivals:
                 r.bulges = [b + dt * BULGE_SPEED for b in r.bulges if b < len(r.body) + 2]
         self.ambience.update(dt)
@@ -1241,6 +1542,10 @@ class Game:
             self.particles.draw(w)
             return
 
+        for i, tun in enumerate(self.tunnels):
+            col = TUNNEL_COLORS[tun.color_index % len(TUNNEL_COLORS)]
+            for end, ph in ((tun.a, 0.0), (tun.b, 1.7)):
+                vfx.draw_tunnel_end(w, end, t, col, tun.openness, False, ph + i)
         for mine in self.mines:
             vfx.draw_mine(w, mine, t)
         vfx.draw_food(w, self.food, t)
@@ -1274,7 +1579,7 @@ class Game:
             self.renderer.draw(w, self.snake, alpha, t, self.snake.steps + alpha,
                                ghost=self.ghost_active, bulges=self.bulges,
                                head_scale=1.0 + 0.18 * self.eat_pulse, tongue_boost=near_food,
-                               eye_color=eye)
+                               eye_color=eye, lift=self._lift_fn(alpha))
             head = self.renderer.head_pos
 
             # Fulmini del magnete verso il cibo attirato
@@ -1293,6 +1598,16 @@ class Game:
             if PowerUpType.SPEED_BOOST in self.effects:
                 vfx.blit_glow(w, head, CELL_SIZE * 1.6, (110, 50, 0), 0.8)
 
+        for i, tun in enumerate(self.tunnels):
+            col = TUNNEL_COLORS[tun.color_index % len(TUNNEL_COLORS)]
+            for end, ph in ((tun.a, 0.0), (tun.b, 1.7)):
+                vfx.draw_tunnel_end(w, end, t, col, tun.openness, True, ph + i)
+
+        for pr in self.projectiles:
+            vfx.draw_projectile(w, pr.x * CELL_SIZE, pr.y * CELL_SIZE, t)
+        for a, b, life in self.lasers:
+            vfx.draw_laser(w, a, b, POWERUP_INFO[PowerUpType.LASER][1], life / 0.3)
+
         self.particles.draw(w)
 
         for ft in self.texts:
@@ -1300,7 +1615,9 @@ class Game:
             surf = vfx.glow_text(self.fonts[ft.size], ft.text, ft.color, vfx.scale_color(ft.color, 0.6), 4)
             surf = surf.copy()
             surf.set_alpha(int(255 * min(1.0, frac * 2)))
-            w.blit(surf, surf.get_rect(center=(ft.x, ft.y)))
+            rect = surf.get_rect(center=(ft.x, ft.y))
+            rect.clamp_ip(w.get_rect())  # Le scritte vicino ai bordi restano leggibili
+            w.blit(surf, rect)
 
         # Bullet time: toni freddi e scuri
         if self.slowmo_blend > 0.01:
@@ -1325,7 +1642,7 @@ class Game:
         """HUD: punti, combo, energia, record, livello ed effetti attivi."""
         s = self.screen
         t = self.time
-        s.blit(self._panel(250, 96), (10, 8))
+        s.blit(self._panel(310, 96), (10, 8))
         s.blit(self.fonts["tiny"].render("PUNTI", True, COLOR_GRAY), (24, 14))
         score = vfx.glow_text(self.fonts["mid"], f"{self.score:,}".replace(",", "."), COLOR_WHITE,
                               (40, 160, 120), 6)
@@ -1353,7 +1670,9 @@ class Game:
         elif self.dashing:
             s.blit(self.fonts["tiny"].render("SCATTO!", True, COLOR_CYAN), (bx, by + 12))
         else:
-            s.blit(self.fonts["tiny"].render("ENERGIA  ·  SHIFT scatto", True, (90, 110, 120)), (bx, by + 12))
+            s.blit(self.fonts["tiny"].render("SPAZIO salto · F sparo · SHIFT scatto · E nova", True,
+                                             (90, 110, 120)),
+                   (bx, by + 12))
 
         # Pannello destro: record, livello, lunghezza
         s.blit(self._panel(170, 78), (SCREEN_WIDTH - 180, 8))
@@ -1424,10 +1743,10 @@ class Game:
             lines = [
                 ("FRECCE / WASD", "muovi il serpente"),
                 ("SHIFT (tieni)", "scatto: sfonda mine e rivali"),
+                ("F / CTRL", "sputa veleno (costa energia)"),
                 ("E / Q", "NOVA: onda d'urto a energia piena"),
-                ("P / SPAZIO", "pausa"),
-                ("T  /  TAB", "cambia tema  /  classifica"),
-                ("M  /  F11", "audio  /  schermo intero"),
+                ("SPAZIO", "salto: scavalca corpo, rivali e mine"),
+                ("P · M · F11", "pausa · audio · schermo intero"),
             ]
             for i, (k, v) in enumerate(lines):
                 y = top + 14 + i * 33
@@ -1435,7 +1754,7 @@ class Game:
                 self.screen.blit(self.fonts["tiny"].render(v, True, COLOR_GRAY), (SCREEN_WIDTH / 2 - 30, y + 4))
         else:
             self._draw_leaderboard(SCREEN_WIDTH / 2 - 210, top, 420, 0, 18)
-        footer = f"TEMA  {self.theme.name}  [T]        RECORD  {self.high_score}"
+        footer = f"TEMA {self.theme.name} [T]   ·   CLASSIFICA [TAB]   ·   RECORD {self.high_score}"
         self._draw_centered(footer, self.fonts["small"], COLOR_GOLD, 266, (140, 90, 0))
 
     def _draw_gameover(self) -> None:

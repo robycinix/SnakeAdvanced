@@ -272,3 +272,170 @@ def test_theme_cycle_is_saved(game_instance: Game):
     assert game_instance.theme.name != first
     assert ScoreManager.get_setting("theme") == game_instance.theme.name
     assert len(THEMES) >= 4
+
+
+# --- Tunnel ----------------------------------------------------------------
+
+from tunnel import Tunnel
+
+
+def _open_tunnel(a, b) -> Tunnel:
+    tun = Tunnel(a, b)
+    tun.age = 1.0  # Già completamente aperto
+    return tun
+
+
+def test_tunnel_teleports_player_keeping_direction(game_instance: Game):
+    start(game_instance)
+    game_instance.food.position = (0, 0)
+    x, y = START_POSITION
+    exit_cell = (x + 15, y + 8)
+    game_instance.tunnels = [_open_tunnel((x + 1, y), exit_cell)]
+    game_instance.update(MOVE_INTERVAL)
+    assert game_instance.snake.head == exit_cell
+    assert game_instance.teleports == 1
+    game_instance.update(MOVE_INTERVAL)
+    assert game_instance.snake.head == (exit_cell[0] + 1, exit_cell[1])  # stessa direzione
+    assert game_instance.state == GameState.PLAYING
+
+
+def test_blocked_tunnel_exit_does_not_teleport(game_instance: Game):
+    start(game_instance)
+    game_instance.food.position = (0, 0)
+    x, y = START_POSITION
+    exit_cell = (x + 15, y + 8)
+    mine = Mine(exit_cell)
+    game_instance.mines = [mine]
+    game_instance.tunnels = [_open_tunnel((x + 1, y), exit_cell)]
+    game_instance.update(MOVE_INTERVAL)
+    assert game_instance.snake.head == (x + 1, y)
+    assert game_instance.state == GameState.PLAYING
+
+
+def test_closed_tunnel_is_not_traversable(game_instance: Game):
+    start(game_instance)
+    game_instance.food.position = (0, 0)
+    x, y = START_POSITION
+    game_instance.tunnels = [Tunnel((x + 1, y), (x + 15, y + 8))]  # appena nato: in apertura
+    game_instance.update(MOVE_INTERVAL)
+    assert game_instance.snake.head == (x + 1, y)
+
+
+# --- Armi -------------------------------------------------------------------
+
+def _rival_line(cells) -> Rival:
+    rival = Rival(cells[0])
+    rival.snake.body = list(cells)
+    rival.snake.prev_body = list(cells)
+    return rival
+
+
+def test_venom_shot_kills_rival_head_and_costs_energy(game_instance: Game):
+    start(game_instance)
+    game_instance.food.position = (0, 0)
+    x, y = START_POSITION
+    rival = _rival_line([(x + 6, y), (x + 6, y + 1), (x + 6, y + 2)])
+    rival.interval = 999.0  # Fermo per il test
+    game_instance.rivals = [rival]
+    game_instance.energy = 50.0
+    game_instance.handle_key(pygame.K_f)
+    game_instance.handle_key_up(pygame.K_f)
+    assert game_instance.energy == 50.0 - 8.0
+    for _ in range(10):
+        game_instance._update_projectiles(0.03)
+    assert not rival.alive
+    assert game_instance.projectiles == []
+
+
+def test_shot_cuts_rival_body(game_instance: Game):
+    start(game_instance)
+    x, y = START_POSITION
+    rival = _rival_line([(x + 6, y - 3), (x + 6, y - 2), (x + 6, y - 1), (x + 6, y), (x + 6, y + 1)])
+    game_instance.rivals = [rival]
+    game_instance.energy = 50.0
+    game_instance._fire()
+    for _ in range(10):
+        game_instance._update_projectiles(0.03)
+    assert rival.alive and len(rival.body) == 3
+
+
+def test_shot_without_energy_is_denied(game_instance: Game):
+    start(game_instance)
+    game_instance.energy = 2.0
+    game_instance._fire()
+    assert game_instance.projectiles == []
+
+
+def test_laser_pierces_everything_for_free(game_instance: Game):
+    start(game_instance)
+    x, y = START_POSITION
+    r1 = _rival_line([(x + 5, y), (x + 5, y + 1), (x + 5, y + 2)])
+    r2 = _rival_line([(x + 12, y), (x + 12, y - 1), (x + 12, y - 2)])
+    game_instance.rivals = [r1, r2]
+    game_instance.mines = [Mine((x + 9, y))]
+    game_instance.effects[PowerUpType.LASER] = 5.0
+    game_instance.energy = 0.0
+    game_instance._fire()
+    assert not r1.alive and not r2.alive
+    assert game_instance.mines == []
+    assert game_instance.lasers
+
+
+# --- Salto --------------------------------------------------------------------
+
+from config import JUMP_STEPS
+
+
+def test_jump_clears_armed_mine_and_lands(game_instance: Game):
+    start(game_instance)
+    game_instance.food.position = (0, 0)
+    x, y = START_POSITION
+    mine = Mine((x + 2, y))
+    mine.age = 5.0
+    game_instance.mines = [mine]
+    game_instance.handle_key(pygame.K_SPACE)
+    assert game_instance.state == GameState.PLAYING   # SPAZIO non mette più in pausa
+    for _ in range(JUMP_STEPS + 1):
+        game_instance.update(MOVE_INTERVAL)
+    assert game_instance.state == GameState.PLAYING
+    assert game_instance.snake.head == (x + JUMP_STEPS + 1, y)
+    assert game_instance.mines == [mine]               # Scavalcata, non distrutta
+
+
+def test_landing_on_mine_still_kills(game_instance: Game):
+    start(game_instance)
+    game_instance.food.position = (0, 0)
+    x, y = START_POSITION
+    mine = Mine((x + JUMP_STEPS + 1, y))
+    mine.age = 5.0
+    game_instance.mines = [mine]
+    game_instance.handle_key(pygame.K_SPACE)
+    for _ in range(JUMP_STEPS + 1):
+        game_instance.update(MOVE_INTERVAL)
+    assert game_instance.state == GameState.GAMEOVER
+
+
+def test_jump_over_own_body(game_instance: Game):
+    start(game_instance)
+    game_instance.food.position = (0, 0)
+    snake = game_instance.snake
+    # Serpente che punta verso il proprio corpo: senza salto sarebbe morte certa
+    snake.body = [(10, 10), (11, 10), (12, 10), (12, 11), (11, 11), (10, 11), (9, 11), (8, 11), (7, 11)]
+    snake.prev_body = list(snake.body)
+    snake.direction = snake.next_direction = Direction.LEFT
+    snake.change_direction(Direction.DOWN)
+    game_instance.handle_key(pygame.K_SPACE)
+    for _ in range(JUMP_STEPS + 1):
+        game_instance.update(MOVE_INTERVAL)
+    assert game_instance.state == GameState.PLAYING
+    assert snake.head == (10, 10 + JUMP_STEPS + 1)
+
+
+def test_jump_has_cooldown(game_instance: Game):
+    start(game_instance)
+    game_instance.handle_key(pygame.K_SPACE)
+    first = game_instance.jump_start
+    game_instance.update(MOVE_INTERVAL * 5)
+    game_instance.handle_key(pygame.K_SPACE)
+    assert game_instance.jump_start == first
+    assert game_instance.jumps == 1

@@ -54,8 +54,10 @@ Avvio: `python game.py` — Test: `pytest`
 | :--- | :--- |
 | Frecce / WASD | Muovi |
 | SHIFT (tieni) | Scatto: velocità doppia, sfonda le mine, consuma energia |
+| F / CTRL | Sputa veleno: uccide i rivali alla testa, li taglia sul corpo, fa esplodere le mine |
 | E / Q | NOVA: onda d'urto che distrugge le mine (energia piena) |
-| P / SPAZIO | Pausa |
+| SPAZIO | Salto: scavalca 3 celle (corpo, rivali, mine); l'atterraggio conta |
+| P | Pausa |
 | T / TAB (menu) | Cambia tema / mostra classifica |
 | M | Audio e musica on/off |
 | F11 | Schermo intero |
@@ -69,3 +71,13 @@ tagliali con lo scatto o disintegrali con la Nova; lasciano frammenti di cibo). 
 il **boss "Vipera Imperiale"**: ti caccia, attraversa i muri e ti morde la coda; si sconfigge
 accorciandolo con scatto, Nova o mine. **Musica generata** in tempo reale (menu, azione, boss),
 **classifica top 10** con nome e **4 temi** (Giungla, Deserto, Neon, Abisso) salvati tra le partite.
+
+**Armi**: veleno (costa energia), power-up **Triplo Veleno** (ventaglio) e **Laser** (raggio perforante gratuito).
+**Tunnel**: coppie di vortici dello stesso colore compaiono a caso; entrando in uno si esce dall'altro
+(funzionano anche per rivali e proiettili; se l'uscita è ostruita il tunnel non trasporta).
+
+## 5. Eseguibile e installer
+
+`python build.py` crea `dist/SnakeAdvanced.exe` (portatile, non serve Python) e, se Inno Setup 6
+è installato, anche `dist/SnakeAdvanced-Setup.exe`. Nell'eseguibile record e classifica sono salvati
+in `%APPDATA%/SnakeAdvanced`.

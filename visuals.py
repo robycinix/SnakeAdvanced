@@ -9,7 +9,7 @@ gradienti pixel per pixel a ogni frame sarebbe troppo lento in Pygame.
 
 import math
 import random
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pygame
 
@@ -467,7 +467,8 @@ class SnakeRenderer:
     def draw(self, target: pygame.Surface, snake, alpha: float, t: float, travel: float, *,
              ghost: bool = False, skip: int = 0, bulges: Sequence[float] = (),
              points: Optional[List[Point]] = None, head_scale: float = 1.0,
-             tongue_boost: bool = False, eye_color: Optional[Color] = None) -> None:
+             tongue_boost: bool = False, eye_color: Optional[Color] = None,
+             lift: Optional[Callable[[float], float]] = None) -> None:
         """
         Disegna il serpente su target.
 
@@ -477,6 +478,8 @@ class SnakeRenderer:
         :param ghost: Rendi il corpo traslucido (power-up Fantasma).
         :param skip: Numero di segmenti iniziali già esplosi (animazione di morte).
         :param bulges: Posizioni (in segmenti) delle prede che scendono nel corpo.
+        :param lift: Altezza in pixel di ogni punto del corpo (salto): il corpo sale
+                     e si ingrandisce, mentre l'ombra resta a terra.
         """
         pts = points if points is not None else self.compute_points(snake, alpha)
         n = len(pts)
@@ -503,6 +506,7 @@ class SnakeRenderer:
         # 2) Tangenti e ondulazione laterale ancorata al terreno
         m = len(raw)
         samples: List[Tuple[float, float, float, float, float]] = []
+        lifts: List[float] = []
         for j, (x, y, seg) in enumerate(raw):
             a = raw[max(0, j - 1)]
             b = raw[min(m - 1, j + 1)]
@@ -515,11 +519,13 @@ class SnakeRenderer:
             s = seg / total
             amp = 2.6 * min(1.0, seg / 2.5) * (0.6 + 0.4 * s)
             off = amp * math.sin((travel - seg) * 1.25)
-            samples.append((x - ty * off, y + tx * off, seg, tx, ty))
+            h = lift(seg) if lift is not None else 0.0
+            lifts.append(h)
+            samples.append((x - ty * off, y + tx * off - h, seg, tx, ty))
 
         # Regione interessata (+ margine per testa, ombra e rigonfiamenti):
         # pulire e comporre solo quella rende economici più serpenti a schermo
-        margin = int(CELL_SIZE * 2 * self.scale) + 8
+        margin = int(CELL_SIZE * 2 * self.scale) + 40  # anche ombra a terra durante il salto
         xs = [smp[0] for smp in samples]
         ys = [smp[1] for smp in samples]
         area = pygame.Rect(int(min(xs)) - margin, int(min(ys)) - margin,
@@ -542,11 +548,12 @@ class SnakeRenderer:
             if seg < skip:
                 continue
             s = seg / total
-            r = self._radius(seg, s, bulges)
+            h = lifts[j]
+            r = self._radius(seg, s, bulges) * (1.0 + h / 70.0)
             nx, ny = -ty, tx
             d = nx * _LIGHT[0] + ny * _LIGHT[1]
             visible.append((x, y, r, nx * d, ny * d, self._tone(seg, s)))
-            pygame.draw.circle(shadow, (0, 0, 0, 255), (x + 4, y + 5), r)
+            pygame.draw.circle(shadow, (0, 0, 0, 255), (x + 4, y + 5 + h), r * (1.0 - h / 90.0))
             frac = seg - int(seg)
             if 0.45 < frac < 0.55 and seg >= 1:
                 marks.append((x, y, int(seg), tx, ty, r))
@@ -592,7 +599,9 @@ class SnakeRenderer:
             angle = -math.degrees(math.atan2(uy, ux))
             cx, cy = hx + ux * CELL_SIZE * 0.22 * self.scale, hy + uy * CELL_SIZE * 0.22 * self.scale
             self.head_pos = (cx, cy)
-            pygame.draw.circle(shadow, (0, 0, 0, 255), (cx + 4, cy + 5), CELL_SIZE * 0.6 * head_scale)
+            pygame.draw.circle(shadow, (0, 0, 0, 255), (cx + 4, cy + 5 + lifts[0]),
+                               CELL_SIZE * 0.6 * head_scale * (1.0 - lifts[0] / 90.0))
+            head_scale *= 1.0 + lifts[0] / 70.0
             spr = self._head_sprite(angle, head_scale)
             layer.blit(spr, spr.get_rect(center=(cx, cy)))
 
@@ -707,6 +716,14 @@ def draw_power_symbol(surface: pygame.Surface, c: Point, kind: str, s: float, co
                                                       (0, 0.95), (-0.33, 0.6), (-0.65, 0.95)], s))
         for side in (-1, 1):
             pygame.draw.circle(surface, (20, 20, 40), (c[0] + side * 0.25 * s, c[1] - 0.25 * s), 0.14 * s)
+    elif kind == "TRIPLE_SHOT":
+        for a in (-0.55, 0.0, 0.55):
+            tip = (c[0] + math.sin(a) * s * 0.95, c[1] - math.cos(a) * s * 0.95)
+            pygame.draw.line(surface, color, (c[0], c[1] + 0.7 * s), tip, max(1, int(0.18 * s)))
+            pygame.draw.circle(surface, color, tip, 0.24 * s)
+    elif kind == "LASER":
+        pygame.draw.line(surface, color, (c[0] - s, c[1] + s * 0.6), (c[0] + s, c[1] - s * 0.6), max(2, int(0.3 * s)))
+        pygame.draw.polygon(surface, (255, 255, 255), _poly(c, [(0, -0.45), (0.3, 0), (0, 0.45), (-0.3, 0)], s))
     elif kind == "MAGNET":
         w = max(2, int(0.38 * s))
         rect = pygame.Rect(0, 0, 1.4 * s, 1.4 * s)
@@ -840,3 +857,84 @@ def draw_portal(surface: pygame.Surface, center: Point, t: float, color: Color, 
         rect = pygame.Rect(0, 0, r * 2, r * 2)
         rect.center = (int(center[0]), int(center[1]))
         pygame.draw.arc(surface, scale_color(color, k), rect, a, a + 2.2, 2)
+
+
+def draw_tunnel_end(surface: pygame.Surface, pos: Tuple[int, int], t: float, color: Color,
+                    k: float, over: bool, phase: float = 0.0) -> None:
+    """
+    Imboccatura di un tunnel di teletrasporto, in due passate:
+    - over=False: pozzo scuro e alone, disegnati SOTTO il serpente;
+    - over=True: bracci a spirale e scintille risucchiate, disegnati SOPRA,
+      così il corpo sembra davvero inghiottito dal vortice.
+    """
+    if k <= 0.01:
+        return
+    cx, cy = cell_center(pos)
+    R = CELL_SIZE * 0.95 * k
+    if not over:
+        blit_glow(surface, (cx, cy), CELL_SIZE * 2.4 * k, scale_color(color, 0.55), 0.9)
+        for i in range(6):
+            f = i / 5
+            pygame.draw.circle(surface, lerp_color(scale_color(color, 0.45), (4, 4, 10), f),
+                               (cx, cy), max(1.0, R * (1 - f * 0.75)))
+        return
+    # Bracci a spirale rotanti
+    for arm in range(3):
+        pts = []
+        for j in range(9):
+            f = j / 8
+            r = R * (0.25 + 0.95 * f)
+            a = phase + arm * math.tau / 3 + f * 2.6 - t * 4.5
+            pts.append((cx + math.cos(a) * r, cy + math.sin(a) * r))
+        pygame.draw.lines(surface, scale_color(color, 0.5), False, pts, 3)
+        pygame.draw.lines(surface, lerp_color(color, (255, 255, 255), 0.4), False, pts, 1)
+    # Scintille risucchiate verso il centro
+    for i in range(7):
+        ph = (t * 0.9 + i / 7 + phase) % 1.0
+        r = (1.0 - ph) * CELL_SIZE * 1.5 * k
+        a = i * 2.4 + ph * 5 + phase
+        blit_glow(surface, (cx + math.cos(a) * r, cy + math.sin(a) * r), 4, color, ph)
+    pygame.draw.circle(surface, lerp_color(color, (255, 255, 255), 0.5), (cx, cy), R, 1)
+
+
+def draw_projectile(surface: pygame.Surface, x: float, y: float, t: float) -> None:
+    """Goccia di veleno luminosa (x, y in pixel)."""
+    blit_glow(surface, (x, y), 13, (60, 140, 40), 1.0)
+    pygame.draw.circle(surface, (150, 255, 110), (x, y), 4)
+    pygame.draw.circle(surface, (235, 255, 220), (x - 1, y - 1), 2)
+
+
+def draw_laser(surface: pygame.Surface, a: Point, b: Point, color: Color, k: float) -> None:
+    """Raggio laser che si assottiglia e svanisce (k: 1 -> 0)."""
+    if k <= 0:
+        return
+    pygame.draw.line(surface, scale_color(color, 0.35 * k), a, b, max(1, int(14 * k)))
+    pygame.draw.line(surface, scale_color(color, k), a, b, max(1, int(6 * k)))
+    pygame.draw.line(surface, scale_color((255, 255, 255), k), a, b, max(1, int(2 * k)))
+    blit_glow(surface, a, 26 * k, color, k)
+    blit_glow(surface, b, 22 * k, color, k)
+
+
+def make_icon(size: int = 256, skin: SkinPalette = THEMES[0].skin) -> pygame.Surface:
+    """
+    Icona del gioco generata al volo: un serpente arrotolato a spirale su un
+    disco scuro luminoso. Usata per la finestra e per l'eseguibile.
+    """
+    big = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    cx, cy = SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2
+    box = 150
+    for i in range(30):
+        f = i / 29
+        pygame.draw.circle(big, (*lerp_color((0, 60, 50), (6, 14, 18), f), 255), (cx, cy), box * (1 - f * 0.12))
+    pygame.draw.circle(big, (*skin.bright, 255), (cx, cy), box, 4)
+    # Spirale dall'esterno (testa) verso l'interno (coda), passo costante di una cella
+    pts: List[Point] = []
+    angle, radius = -0.6, 105.0
+    while radius > 18 and len(pts) < 60:
+        pts.append((cx + math.cos(angle) * radius, cy + math.sin(angle) * radius))
+        angle -= CELL_SIZE * 1.05 / radius
+        radius -= 1.9
+    ren = SnakeRenderer(skin, 2.2)
+    ren.draw(big, None, 1.0, 0.5, 0.0, points=pts)
+    crop = big.subsurface(pygame.Rect(cx - box - 4, cy - box - 4, box * 2 + 8, box * 2 + 8)).copy()
+    return pygame.transform.smoothscale(crop, (size, size))
